@@ -1,0 +1,819 @@
+%matplotlib inline
+import matplotlib.pyplot as plt
+import seaborn as sb
+import numpy as np
+from tqdm import tqdm_notebook as tqdm
+from joblib import Parallel, delayed
+import time
+
+# ParallelExecutor code taken and modified from https://gist.github.com/MInner/12f9cf961059aed1a60e72c5531a697f
+def text_progessbar(seq, total=None):
+    step = 1
+    tick = time.time()
+    while True:
+        time_diff = time.time() - tick
+        avg_speed = time_diff / step
+        total_str = 'of {}'.format(total if total else '')
+        print('step', step, '{}'.format(round(time_diff, 2)), 'avg: {} iter/sec'.format(round(avg_speed)), total_str)
+        step += 1
+        yield next(seq)
+
+all_bar_funcs = {
+    'tqdm': lambda args: lambda x: tqdm(x, **args),
+    'txt': lambda args: lambda x: text_progessbar(x, **args),
+    'False': lambda args: iter,
+    'None': lambda args: iter,
+}
+
+def ParallelExecutor(use_bar='tqdm', **joblib_args):
+    def aprun(bar=use_bar, **tq_args):
+        def tmp(op_iter):
+            if str(bar) in all_bar_funcs.keys():
+                bar_func = all_bar_funcs[str(bar)](tq_args)
+            else:
+                raise ValueError('Value {} not supported as bar type'.format(bar))
+            return Parallel(**joblib_args)(bar_func(op_iter))
+        return tmp
+    return aprun
+
+def simulate_game(batters, return_stats=False):
+    '''Simulates the batting side of a Major League Baseball game
+    
+    This is a simplified simulation of a baseball game, where each batter performs randomly
+    according to their corresponding batting average. This simulation incorporates
+    different types of hits, such as singles, doubles, triples, and home runs, and uses
+    2017-2018 Major League averages for the probabilities of those hit types occurring.
+    This simulation leaves out other aspects of the game, such as individual-level hit type
+    tendencies, double plays, stolen bases, errors, and so forth.
+
+    Parameters
+    ----------
+    batters: list
+        A list of batting averages for 9 batters in the desired batting order
+        Example input: [0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25, 0.25]
+
+    Returns
+    ----------
+    runs_scored: int
+        The number of runs scored by the batters in one simulated game
+    batting_stats: dict
+        Dictionary containing batting statistics for each batter
+    '''
+    runs_scored = 0
+    batter_num = 0
+
+    # NOTE: Earned Bases is the total number of bases that the batter advanced themselves
+    #       AND their teammates through batting
+    batting_stats = {}
+    for batter in range(len(batters)):
+        batting_stats[batter] = {
+            'At Bat': 0, 'Single': 0, 'Double': 0, 'Triple': 0, 'Home Run': 0, 'Out': 0,
+            'RBI': 0, 'Earned Bases': 0, 'Players On Base': 0, 'Bases Loaded': 0, 'Grand Slam': 0
+        }
+
+    # Assume the game lasts for only 9 innings (no extra innings)
+    for inning in range(9):
+        bases = [
+            False, # First base, index 0
+            False, # Second base, index 1
+            False  # Third base, index 2
+        ]
+        batters_out = 0
+
+        while batters_out < 3:
+            batting_stats[batter_num]['At Bat'] += 1
+            if bases[2] and bases[1] and bases[0]:
+                batting_stats[batter_num]['Bases Loaded'] += 1
+
+            if bases[2]:
+                batting_stats[batter_num]['Players On Base'] += 1
+            if bases[1]:
+                batting_stats[batter_num]['Players On Base'] += 1
+            if bases[0]:
+                batting_stats[batter_num]['Players On Base'] += 1
+
+            if np.random.random() < batters[batter_num]:
+                # Batting estimates from MLB.com statistics in 2017/2018 seasons:
+                #     Single base hit: 64% of hits
+                #     Double base hit: 20% of hits
+                #     Triple base hit: 2% of hits
+                #     Home run: 14% of hits
+                hit_type = np.random.choice(['Single', 'Double', 'Triple', 'Home Run'], p=[.64, .2, .02, .14])
+
+                if hit_type == 'Single':
+                    batting_stats[batter_num]['Single'] += 1
+
+                    # All base runners advance 1 base
+                    if bases[2]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 1
+                        bases[2] = False
+                    if bases[1]:
+                        bases[2] = True
+                        bases[1] = False
+                        batting_stats[batter_num]['Earned Bases'] += 1
+                    if bases[0]:
+                        bases[1] = True
+                        batting_stats[batter_num]['Earned Bases'] += 1
+
+                    bases[0] = True
+                    batting_stats[batter_num]['Earned Bases'] += 1
+
+                elif hit_type == 'Double':
+                    batting_stats[batter_num]['Double'] += 1
+
+                    # All base runners advance 2 bases
+                    if bases[2]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 1
+                        bases[2] = False
+                    if bases[1]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 2
+                        bases[1] = False
+                    if bases[0]:
+                        bases[2] = True
+                        batting_stats[batter_num]['Earned Bases'] += 2
+                        bases[0] = False
+
+                    bases[1] = True
+                    batting_stats[batter_num]['Earned Bases'] += 2
+
+                elif hit_type == 'Triple':
+                    batting_stats[batter_num]['Triple'] += 1
+
+                    # All base runners advance 3 bases
+                    if bases[2]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 1
+                        bases[2] = False
+                    if bases[1]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 2
+                        bases[1] = False
+                    if bases[0]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 3
+                        bases[0] = False
+
+                    bases[2] = True
+                    batting_stats[batter_num]['Earned Bases'] += 3
+
+                elif hit_type == 'Home Run':
+                    batting_stats[batter_num]['Home Run'] += 1
+
+                    # Check if a Grand Slam was scored
+                    if bases[0] and bases[1] and bases[2]:
+                        batting_stats[batter_num]['Grand Slam'] += 1
+
+                    # All base runners and the hitter score a run
+                    if bases[2]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 1
+                        bases[2] = False
+                    if bases[1]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 2
+                        bases[1] = False
+                    if bases[0]:
+                        runs_scored += 1
+                        batting_stats[batter_num]['RBI'] += 1
+                        batting_stats[batter_num]['Earned Bases'] += 3
+                        bases[0] = False
+
+                    runs_scored += 1
+                    batting_stats[batter_num]['RBI'] += 1
+                    batting_stats[batter_num]['Earned Bases'] += 4
+
+            else:
+                # Batter struck out, flew out, or grounded out
+                batters_out += 1
+                batting_stats[batter_num]['Out'] += 1
+
+            batter_num = (batter_num + 1) % len(batters)
+
+    return runs_scored, batting_stats
+In [2]:
+designated_hitter_spot_scores = {}
+num_simulated_games = 1000000
+for team_avg in tqdm([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    for designated_hitter_spot in range(9):
+        batters = [team_avg] * 9
+        batters[designated_hitter_spot] = 0.35
+        aprun = ParallelExecutor(n_jobs=-1, use_bar=False)
+        designated_hitter_spot_scores[(team_avg, designated_hitter_spot)] = [runs_scored for runs_scored, _ in aprun(total=num_simulated_games)(delayed(simulate_game)(batters) for _ in range(num_simulated_games))]
+HBox(children=(IntProgress(value=0, max=6), HTML(value='')))
+In [64]:
+dh_batting_avgs = []
+for team_avg in reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    dh_spot_avgs = []
+    for designated_hitter_spot in range(9):
+        dh_spot_avgs.append(np.mean(designated_hitter_spot_scores[(team_avg, designated_hitter_spot)]))
+    dh_spot_avgs = np.array(dh_spot_avgs) / np.mean(dh_spot_avgs)
+    dh_batting_avgs.append(dh_spot_avgs)
+
+plt.figure(figsize=(9, 9))
+sb.heatmap(dh_batting_avgs, cmap='PuOr', center=1., annot=True, fmt='.3f', cbar=False)
+plt.xticks([x + 0.5 for x in range(9)], [str(x) for x in range(1, 10)], fontsize=12)
+plt.xlabel('DH Batting Position (BA=0.35)', fontsize=14)
+plt.yticks([y + 0.5 for y in range(6)], reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]), fontsize=12, va='center')
+plt.ylabel('Team Batting Average (BA)', fontsize=14)
+plt.title('Batting order matters when one player is much\nbetter than their teammates\n\n', fontsize=20)
+plt.text(4.5, -0.1, 'Measured: Relative runs scored based on the DH batting position\n>1 means more runs scored, <1 means fewer runs scored', fontsize=12, ha='center')
+plt.text(-0.7, 6.8, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+plt.savefig('mlb-batting-order-dh.png', bbox_inches='tight')
+;
+Out[64]:
+''
+
+In [4]:
+from scipy.stats import ranksums
+from itertools import product
+
+for team_avg1, designated_hitter_spot1, team_avg2, designated_hitter_spot2 in product([0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9), [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9)):
+    if team_avg1 != team_avg2:
+        continue
+    if designated_hitter_spot1 > designated_hitter_spot2:
+        continue
+    if team_avg1 == team_avg2 and designated_hitter_spot1 == designated_hitter_spot2:
+        continue
+    statistic, pval = ranksums(designated_hitter_spot_scores[(team_avg1, designated_hitter_spot1)], designated_hitter_spot_scores[(team_avg2, designated_hitter_spot2)])
+    if pval < 1e-5:
+        print('sig diff: team avg={}, dh pos={} vs. dh pos={} [p={}]'.format(team_avg1, designated_hitter_spot1 + 1, designated_hitter_spot2 + 1, pval))
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=3 [p=1.993213882431106e-34]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=4 [p=1.812699459453188e-33]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=5 [p=4.841408611226961e-105]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=6 [p=2.1989383913301317e-231]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=7 [p=9.216188457618672e-207]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=8 [p=3.667389122454236e-218]
+sig diff: team avg=0.1, dh pos=1 vs. dh pos=9 [p=3.4321976744637874e-290]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=3 [p=8.683361888508758e-21]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=4 [p=4.275214713813377e-20]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=5 [p=2.307786280302862e-79]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=6 [p=6.56752502068817e-192]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=7 [p=1.2862878707847538e-169]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=8 [p=6.758757959239213e-180]
+sig diff: team avg=0.1, dh pos=2 vs. dh pos=9 [p=1.7225195850226612e-245]
+sig diff: team avg=0.1, dh pos=3 vs. dh pos=5 [p=1.8386948714134494e-21]
+sig diff: team avg=0.1, dh pos=3 vs. dh pos=6 [p=1.6438493001481296e-90]
+sig diff: team avg=0.1, dh pos=3 vs. dh pos=7 [p=1.8420283773808343e-75]
+sig diff: team avg=0.1, dh pos=3 vs. dh pos=8 [p=2.922048694446345e-82]
+sig diff: team avg=0.1, dh pos=3 vs. dh pos=9 [p=8.729968564474104e-128]
+sig diff: team avg=0.1, dh pos=4 vs. dh pos=5 [p=7.157137876264341e-22]
+sig diff: team avg=0.1, dh pos=4 vs. dh pos=6 [p=4.583023030013289e-91]
+sig diff: team avg=0.1, dh pos=4 vs. dh pos=7 [p=4.8140938524114977e-76]
+sig diff: team avg=0.1, dh pos=4 vs. dh pos=8 [p=7.650725116291236e-83]
+sig diff: team avg=0.1, dh pos=4 vs. dh pos=9 [p=2.4714887218395744e-128]
+sig diff: team avg=0.1, dh pos=5 vs. dh pos=6 [p=2.198816819980043e-26]
+sig diff: team avg=0.1, dh pos=5 vs. dh pos=7 [p=1.0330372720533307e-18]
+sig diff: team avg=0.1, dh pos=5 vs. dh pos=8 [p=4.768588761976132e-22]
+sig diff: team avg=0.1, dh pos=5 vs. dh pos=9 [p=2.1756207162931975e-47]
+sig diff: team avg=0.1, dh pos=7 vs. dh pos=9 [p=1.8820378340149334e-08]
+sig diff: team avg=0.1, dh pos=8 vs. dh pos=9 [p=1.532389060082728e-06]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=3 [p=3.6557297985692933e-06]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=5 [p=1.4410639275113839e-18]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=6 [p=2.813016210280305e-69]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=7 [p=2.1148242931535942e-89]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=8 [p=3.304295742713236e-120]
+sig diff: team avg=0.15, dh pos=1 vs. dh pos=9 [p=2.137620551842133e-178]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=3 [p=9.408419520887769e-10]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=5 [p=9.070076759034137e-25]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=6 [p=4.013501898130506e-81]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=7 [p=7.944112339150383e-103]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=8 [p=8.693675681304036e-136]
+sig diff: team avg=0.15, dh pos=2 vs. dh pos=9 [p=2.4995069467551577e-197]
+sig diff: team avg=0.15, dh pos=3 vs. dh pos=6 [p=2.1216224794592715e-38]
+sig diff: team avg=0.15, dh pos=3 vs. dh pos=7 [p=1.3510161214298604e-53]
+sig diff: team avg=0.15, dh pos=3 vs. dh pos=8 [p=9.038350203657884e-78]
+sig diff: team avg=0.15, dh pos=3 vs. dh pos=9 [p=1.6883407647869588e-125]
+sig diff: team avg=0.15, dh pos=4 vs. dh pos=5 [p=9.32637132490468e-16]
+sig diff: team avg=0.15, dh pos=4 vs. dh pos=6 [p=2.516207750135432e-63]
+sig diff: team avg=0.15, dh pos=4 vs. dh pos=7 [p=1.513573427948481e-82]
+sig diff: team avg=0.15, dh pos=4 vs. dh pos=8 [p=4.0313322280118733e-112]
+sig diff: team avg=0.15, dh pos=4 vs. dh pos=9 [p=2.808888831509607e-168]
+sig diff: team avg=0.15, dh pos=5 vs. dh pos=6 [p=2.2369635603850538e-18]
+sig diff: team avg=0.15, dh pos=5 vs. dh pos=7 [p=4.441855163805096e-29]
+sig diff: team avg=0.15, dh pos=5 vs. dh pos=8 [p=3.653180674858543e-47]
+sig diff: team avg=0.15, dh pos=5 vs. dh pos=9 [p=3.159014991272495e-85]
+sig diff: team avg=0.15, dh pos=6 vs. dh pos=8 [p=1.504718632116115e-08]
+sig diff: team avg=0.15, dh pos=6 vs. dh pos=9 [p=3.424427465554104e-27]
+sig diff: team avg=0.15, dh pos=7 vs. dh pos=9 [p=7.239966785374588e-17]
+sig diff: team avg=0.15, dh pos=8 vs. dh pos=9 [p=2.632610106337814e-07]
+sig diff: team avg=0.2, dh pos=1 vs. dh pos=3 [p=4.975863769272197e-06]
+sig diff: team avg=0.2, dh pos=1 vs. dh pos=6 [p=2.65483444031005e-28]
+sig diff: team avg=0.2, dh pos=1 vs. dh pos=7 [p=1.8135853092597406e-47]
+sig diff: team avg=0.2, dh pos=1 vs. dh pos=8 [p=1.150233689898291e-57]
+sig diff: team avg=0.2, dh pos=1 vs. dh pos=9 [p=7.223424302190309e-92]
+sig diff: team avg=0.2, dh pos=2 vs. dh pos=6 [p=1.0411706910861108e-19]
+sig diff: team avg=0.2, dh pos=2 vs. dh pos=7 [p=5.1747610796208696e-36]
+sig diff: team avg=0.2, dh pos=2 vs. dh pos=8 [p=6.258135807210273e-45]
+sig diff: team avg=0.2, dh pos=2 vs. dh pos=9 [p=1.5616448083207673e-75]
+sig diff: team avg=0.2, dh pos=3 vs. dh pos=6 [p=9.158553336775526e-11]
+sig diff: team avg=0.2, dh pos=3 vs. dh pos=7 [p=3.301865172490029e-23]
+sig diff: team avg=0.2, dh pos=3 vs. dh pos=8 [p=2.1319152939525667e-30]
+sig diff: team avg=0.2, dh pos=3 vs. dh pos=9 [p=4.16454555014728e-56]
+sig diff: team avg=0.2, dh pos=4 vs. dh pos=6 [p=7.091753492774976e-27]
+sig diff: team avg=0.2, dh pos=4 vs. dh pos=7 [p=1.3363453468048125e-45]
+sig diff: team avg=0.2, dh pos=4 vs. dh pos=8 [p=1.3048721867324426e-55]
+sig diff: team avg=0.2, dh pos=4 vs. dh pos=9 [p=2.650185348750165e-89]
+sig diff: team avg=0.2, dh pos=5 vs. dh pos=6 [p=1.4343465725467364e-11]
+sig diff: team avg=0.2, dh pos=5 vs. dh pos=7 [p=2.2522684790558515e-24]
+sig diff: team avg=0.2, dh pos=5 vs. dh pos=8 [p=1.0047752339155035e-31]
+sig diff: team avg=0.2, dh pos=5 vs. dh pos=9 [p=7.322521942273125e-58]
+sig diff: team avg=0.2, dh pos=6 vs. dh pos=8 [p=6.891044968687213e-07]
+sig diff: team avg=0.2, dh pos=6 vs. dh pos=9 [p=1.8501164693310642e-20]
+sig diff: team avg=0.2, dh pos=7 vs. dh pos=9 [p=5.55812122235324e-09]
+sig diff: team avg=0.25, dh pos=1 vs. dh pos=6 [p=1.3831070831091773e-08]
+sig diff: team avg=0.25, dh pos=1 vs. dh pos=7 [p=3.31894013383353e-18]
+sig diff: team avg=0.25, dh pos=1 vs. dh pos=8 [p=1.7330019936918686e-26]
+sig diff: team avg=0.25, dh pos=1 vs. dh pos=9 [p=2.313896122609819e-28]
+sig diff: team avg=0.25, dh pos=2 vs. dh pos=7 [p=2.165570151778953e-08]
+sig diff: team avg=0.25, dh pos=2 vs. dh pos=8 [p=4.208549321541679e-14]
+sig diff: team avg=0.25, dh pos=2 vs. dh pos=9 [p=1.871896887582137e-15]
+sig diff: team avg=0.25, dh pos=3 vs. dh pos=7 [p=3.2875112864625612e-06]
+sig diff: team avg=0.25, dh pos=3 vs. dh pos=8 [p=3.877797203112571e-11]
+sig diff: team avg=0.25, dh pos=3 vs. dh pos=9 [p=2.481145930009218e-12]
+sig diff: team avg=0.25, dh pos=4 vs. dh pos=7 [p=1.1449304045033806e-12]
+sig diff: team avg=0.25, dh pos=4 vs. dh pos=8 [p=1.226266128442354e-19]
+sig diff: team avg=0.25, dh pos=4 vs. dh pos=9 [p=3.0013494742914022e-21]
+sig diff: team avg=0.25, dh pos=5 vs. dh pos=7 [p=3.756596993806079e-07]
+sig diff: team avg=0.25, dh pos=5 vs. dh pos=8 [p=1.9972127491978356e-12]
+sig diff: team avg=0.25, dh pos=5 vs. dh pos=9 [p=1.0843693706190971e-13]
+sig diff: team avg=0.25, dh pos=6 vs. dh pos=8 [p=6.095539057877671e-07]
+sig diff: team avg=0.25, dh pos=6 vs. dh pos=9 [p=7.246783482517967e-08]
+sig diff: team avg=0.3, dh pos=1 vs. dh pos=7 [p=3.590625549191536e-06]
+sig diff: team avg=0.3, dh pos=1 vs. dh pos=8 [p=4.0136192312912695e-11]
+sig diff: team avg=0.3, dh pos=1 vs. dh pos=9 [p=1.7985941375427346e-10]
+sig diff: team avg=0.3, dh pos=2 vs. dh pos=8 [p=7.586368508725617e-10]
+sig diff: team avg=0.3, dh pos=2 vs. dh pos=9 [p=3.0993959675870173e-09]
+sig diff: team avg=0.3, dh pos=3 vs. dh pos=8 [p=7.627671059317768e-08]
+sig diff: team avg=0.3, dh pos=3 vs. dh pos=9 [p=2.632896126595547e-07]
+sig diff: team avg=0.3, dh pos=4 vs. dh pos=7 [p=5.161961870945482e-07]
+sig diff: team avg=0.3, dh pos=4 vs. dh pos=8 [p=2.699565677716188e-12]
+sig diff: team avg=0.3, dh pos=4 vs. dh pos=9 [p=1.3251648748904703e-11]
+sig diff: team avg=0.3, dh pos=5 vs. dh pos=8 [p=7.733403379191462e-07]
+sig diff: team avg=0.3, dh pos=5 vs. dh pos=9 [p=2.435910255012577e-06]
+In [5]:
+pitcher_spot_scores = {}
+num_simulated_games = 1000000
+for team_avg in tqdm([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    for pitcher_spot in range(9):
+        batters = [team_avg] * 9
+        batters[pitcher_spot] = 0.1
+        aprun = ParallelExecutor(n_jobs=-1, use_bar=False)
+        pitcher_spot_scores[(team_avg, pitcher_spot)] = [runs_scored for runs_scored, _ in aprun(total=num_simulated_games)(delayed(simulate_game)(batters) for _ in range(num_simulated_games))]
+HBox(children=(IntProgress(value=0, max=6), HTML(value='')))
+In [65]:
+p_batting_avgs = []
+for team_avg in reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    p_spot_avgs = []
+    for pitcher_spot in range(9):
+        p_spot_avgs.append(np.mean(pitcher_spot_scores[(team_avg, pitcher_spot)]))
+    p_spot_avgs = np.array(p_spot_avgs) / np.mean(p_spot_avgs)
+    p_batting_avgs.append(p_spot_avgs)
+
+plt.figure(figsize=(9, 9))
+sb.heatmap(p_batting_avgs, cmap='PuOr', center=1., annot=True, fmt='.3f', cbar=False)
+plt.xticks([x + 0.5 for x in range(9)], [str(x) for x in range(1, 10)], fontsize=12)
+plt.xlabel('Pitcher Batting Position (BA=0.1)', fontsize=14)
+plt.yticks([y + 0.5 for y in range(6)], reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]), fontsize=12, va='center')
+plt.ylabel('Team Batting Average (BA)', fontsize=14)
+plt.title('Batting order matters when one player is much\nworse than their teammates\n\n', fontsize=20)
+plt.text(4.5, -0.1, 'Measured: Relative runs scored based on the Pitcher batting position\n>1 means more runs scored, <1 means fewer runs scored', fontsize=12, ha='center')
+plt.text(-0.7, 6.8, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+plt.savefig('mlb-batting-order-pitcher.png', bbox_inches='tight')
+;
+Out[65]:
+''
+
+In [7]:
+from scipy.stats import ranksums
+from itertools import product
+
+for team_avg1, pitcher_spot1, team_avg2, pitcher_spot2 in product([0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9), [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9)):
+    if team_avg1 != team_avg2:
+        continue
+    if pitcher_spot1 > pitcher_spot2:
+        continue
+    if team_avg1 == team_avg2 and pitcher_spot1 == pitcher_spot2:
+        continue
+    statistic, pval = ranksums(pitcher_spot_scores[(team_avg1, pitcher_spot1)], pitcher_spot_scores[(team_avg2, pitcher_spot2)])
+    if pval < 1e-5:
+        print('sig diff: team avg={}, pitcher pos={} vs. pitcher pos={} [p={}]'.format(team_avg1, pitcher_spot1 + 1, pitcher_spot2 + 1, pval))
+sig diff: team avg=0.15, pitcher pos=1 vs. pitcher pos=5 [p=3.8851625783791845e-06]
+sig diff: team avg=0.15, pitcher pos=1 vs. pitcher pos=6 [p=1.6567387490416848e-09]
+sig diff: team avg=0.15, pitcher pos=1 vs. pitcher pos=7 [p=3.521864556215601e-13]
+sig diff: team avg=0.15, pitcher pos=1 vs. pitcher pos=8 [p=2.2218326239175095e-14]
+sig diff: team avg=0.15, pitcher pos=1 vs. pitcher pos=9 [p=7.785499313865129e-19]
+sig diff: team avg=0.15, pitcher pos=2 vs. pitcher pos=6 [p=2.0124828886376083e-06]
+sig diff: team avg=0.15, pitcher pos=2 vs. pitcher pos=7 [p=2.0015496834873097e-09]
+sig diff: team avg=0.15, pitcher pos=2 vs. pitcher pos=8 [p=1.995996488992889e-10]
+sig diff: team avg=0.15, pitcher pos=2 vs. pitcher pos=9 [p=3.2618519915831955e-14]
+sig diff: team avg=0.15, pitcher pos=3 vs. pitcher pos=7 [p=1.0796284981609147e-06]
+sig diff: team avg=0.15, pitcher pos=3 vs. pitcher pos=8 [p=1.6098095825185125e-07]
+sig diff: team avg=0.15, pitcher pos=3 vs. pitcher pos=9 [p=1.0132397815959589e-10]
+sig diff: team avg=0.15, pitcher pos=4 vs. pitcher pos=6 [p=7.396386504689107e-07]
+sig diff: team avg=0.15, pitcher pos=4 vs. pitcher pos=7 [p=5.706121239186367e-10]
+sig diff: team avg=0.15, pitcher pos=4 vs. pitcher pos=8 [p=5.3022601322627294e-11]
+sig diff: team avg=0.15, pitcher pos=4 vs. pitcher pos=9 [p=6.745193973135644e-15]
+sig diff: team avg=0.2, pitcher pos=1 vs. pitcher pos=6 [p=3.736793590540399e-21]
+sig diff: team avg=0.2, pitcher pos=1 vs. pitcher pos=7 [p=2.524976319110312e-18]
+sig diff: team avg=0.2, pitcher pos=1 vs. pitcher pos=8 [p=6.746491316929479e-35]
+sig diff: team avg=0.2, pitcher pos=1 vs. pitcher pos=9 [p=6.403222171714512e-45]
+sig diff: team avg=0.2, pitcher pos=2 vs. pitcher pos=6 [p=2.745377273205046e-20]
+sig diff: team avg=0.2, pitcher pos=2 vs. pitcher pos=7 [p=1.592850476032973e-17]
+sig diff: team avg=0.2, pitcher pos=2 vs. pitcher pos=8 [p=9.402831597164582e-34]
+sig diff: team avg=0.2, pitcher pos=2 vs. pitcher pos=9 [p=1.3256041606779473e-43]
+sig diff: team avg=0.2, pitcher pos=3 vs. pitcher pos=6 [p=3.052850586857199e-19]
+sig diff: team avg=0.2, pitcher pos=3 vs. pitcher pos=7 [p=1.4702483430295165e-16]
+sig diff: team avg=0.2, pitcher pos=3 vs. pitcher pos=8 [p=2.2604947523265107e-32]
+sig diff: team avg=0.2, pitcher pos=3 vs. pitcher pos=9 [p=5.097574771619022e-42]
+sig diff: team avg=0.2, pitcher pos=4 vs. pitcher pos=6 [p=3.0892533399419725e-19]
+sig diff: team avg=0.2, pitcher pos=4 vs. pitcher pos=7 [p=1.5077781232512707e-16]
+sig diff: team avg=0.2, pitcher pos=4 vs. pitcher pos=8 [p=2.1263766982882966e-32]
+sig diff: team avg=0.2, pitcher pos=4 vs. pitcher pos=9 [p=4.537418406485668e-42]
+sig diff: team avg=0.2, pitcher pos=5 vs. pitcher pos=6 [p=1.8903311286109317e-12]
+sig diff: team avg=0.2, pitcher pos=5 vs. pitcher pos=7 [p=2.4052778093024993e-10]
+sig diff: team avg=0.2, pitcher pos=5 vs. pitcher pos=8 [p=2.987994710899591e-23]
+sig diff: team avg=0.2, pitcher pos=5 vs. pitcher pos=9 [p=1.6689098012995852e-31]
+sig diff: team avg=0.2, pitcher pos=6 vs. pitcher pos=9 [p=3.2940442949580448e-06]
+sig diff: team avg=0.2, pitcher pos=7 vs. pitcher pos=9 [p=8.444971822549267e-08]
+sig diff: team avg=0.25, pitcher pos=1 vs. pitcher pos=6 [p=1.263607488343873e-23]
+sig diff: team avg=0.25, pitcher pos=1 vs. pitcher pos=7 [p=4.516058690648763e-49]
+sig diff: team avg=0.25, pitcher pos=1 vs. pitcher pos=8 [p=1.868709972805515e-46]
+sig diff: team avg=0.25, pitcher pos=1 vs. pitcher pos=9 [p=9.124875977854823e-82]
+sig diff: team avg=0.25, pitcher pos=2 vs. pitcher pos=6 [p=9.121582635686449e-20]
+sig diff: team avg=0.25, pitcher pos=2 vs. pitcher pos=7 [p=2.658571220387695e-43]
+sig diff: team avg=0.25, pitcher pos=2 vs. pitcher pos=8 [p=7.532218740635377e-41]
+sig diff: team avg=0.25, pitcher pos=2 vs. pitcher pos=9 [p=3.792046725058025e-74]
+sig diff: team avg=0.25, pitcher pos=3 vs. pitcher pos=6 [p=8.383966192001412e-09]
+sig diff: team avg=0.25, pitcher pos=3 vs. pitcher pos=7 [p=1.4330997662660238e-25]
+sig diff: team avg=0.25, pitcher pos=3 vs. pitcher pos=8 [p=1.0181059424978879e-23]
+sig diff: team avg=0.25, pitcher pos=3 vs. pitcher pos=9 [p=5.150512722206992e-50]
+sig diff: team avg=0.25, pitcher pos=4 vs. pitcher pos=6 [p=2.4556456675838104e-22]
+sig diff: team avg=0.25, pitcher pos=4 vs. pitcher pos=7 [p=3.8858858801144415e-47]
+sig diff: team avg=0.25, pitcher pos=4 vs. pitcher pos=8 [p=1.405260832926898e-44]
+sig diff: team avg=0.25, pitcher pos=4 vs. pitcher pos=9 [p=3.7388299589130853e-79]
+sig diff: team avg=0.25, pitcher pos=5 vs. pitcher pos=6 [p=1.0041981665787318e-16]
+sig diff: team avg=0.25, pitcher pos=5 vs. pitcher pos=7 [p=1.1186354391340145e-38]
+sig diff: team avg=0.25, pitcher pos=5 vs. pitcher pos=8 [p=2.2474110418558506e-36]
+sig diff: team avg=0.25, pitcher pos=5 vs. pitcher pos=9 [p=4.689603775373094e-68]
+sig diff: team avg=0.25, pitcher pos=6 vs. pitcher pos=7 [p=2.6120598419790005e-06]
+sig diff: team avg=0.25, pitcher pos=6 vs. pitcher pos=9 [p=6.531623482124316e-20]
+sig diff: team avg=0.25, pitcher pos=7 vs. pitcher pos=9 [p=8.779138829657236e-06]
+sig diff: team avg=0.25, pitcher pos=8 vs. pitcher pos=9 [p=1.194392607523925e-06]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=2 [p=8.353757123256407e-08]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=3 [p=1.6153351773311131e-22]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=4 [p=2.6074603335403655e-06]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=5 [p=6.0048940289536404e-15]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=6 [p=1.7188273321673662e-52]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=7 [p=6.956087996395689e-82]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=8 [p=3.4107621024146694e-109]
+sig diff: team avg=0.3, pitcher pos=1 vs. pitcher pos=9 [p=4.971738054338718e-173]
+sig diff: team avg=0.3, pitcher pos=2 vs. pitcher pos=3 [p=9.959224425730982e-06]
+sig diff: team avg=0.3, pitcher pos=2 vs. pitcher pos=6 [p=4.3000326686945074e-23]
+sig diff: team avg=0.3, pitcher pos=2 vs. pitcher pos=7 [p=2.0450594381375726e-43]
+sig diff: team avg=0.3, pitcher pos=2 vs. pitcher pos=8 [p=1.025315766940147e-63]
+sig diff: team avg=0.3, pitcher pos=2 vs. pitcher pos=9 [p=6.1794625367623775e-114]
+sig diff: team avg=0.3, pitcher pos=3 vs. pitcher pos=4 [p=4.4498404478852373e-07]
+sig diff: team avg=0.3, pitcher pos=3 vs. pitcher pos=6 [p=4.320334730364867e-08]
+sig diff: team avg=0.3, pitcher pos=3 vs. pitcher pos=7 [p=6.30824649646141e-21]
+sig diff: team avg=0.3, pitcher pos=3 vs. pitcher pos=8 [p=2.0209047768680628e-35]
+sig diff: team avg=0.3, pitcher pos=3 vs. pitcher pos=9 [p=2.6572390367461014e-74]
+sig diff: team avg=0.3, pitcher pos=4 vs. pitcher pos=6 [p=6.026023750905654e-26]
+sig diff: team avg=0.3, pitcher pos=4 vs. pitcher pos=7 [p=2.881407355644203e-47]
+sig diff: team avg=0.3, pitcher pos=4 vs. pitcher pos=8 [p=2.215982775474632e-68]
+sig diff: team avg=0.3, pitcher pos=4 vs. pitcher pos=9 [p=4.880235566606631e-120]
+sig diff: team avg=0.3, pitcher pos=5 vs. pitcher pos=6 [p=1.1352532168880723e-13]
+sig diff: team avg=0.3, pitcher pos=5 vs. pitcher pos=7 [p=9.404064042439993e-30]
+sig diff: team avg=0.3, pitcher pos=5 vs. pitcher pos=8 [p=8.688559264804496e-47]
+sig diff: team avg=0.3, pitcher pos=5 vs. pitcher pos=9 [p=1.391575735005446e-90]
+sig diff: team avg=0.3, pitcher pos=6 vs. pitcher pos=8 [p=3.578976447437263e-12]
+sig diff: team avg=0.3, pitcher pos=6 vs. pitcher pos=9 [p=2.2812745629023015e-37]
+sig diff: team avg=0.3, pitcher pos=7 vs. pitcher pos=9 [p=8.020784190788164e-19]
+sig diff: team avg=0.3, pitcher pos=8 vs. pitcher pos=9 [p=6.172240291460689e-09]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=2 [p=3.813780983491385e-15]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=3 [p=1.3830330447057497e-36]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=4 [p=2.5780721611446785e-27]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=5 [p=1.1216694099222578e-27]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=6 [p=3.872729624040197e-90]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=7 [p=2.626956916522825e-176]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=8 [p=9.715274614129921e-230]
+sig diff: team avg=0.35, pitcher pos=1 vs. pitcher pos=9 [p=3.220267321795051e-281]
+sig diff: team avg=0.35, pitcher pos=2 vs. pitcher pos=3 [p=1.6139670212100365e-06]
+sig diff: team avg=0.35, pitcher pos=2 vs. pitcher pos=6 [p=8.299306585791126e-35]
+sig diff: team avg=0.35, pitcher pos=2 vs. pitcher pos=7 [p=1.8586225058566005e-93]
+sig diff: team avg=0.35, pitcher pos=2 vs. pitcher pos=8 [p=2.603919487805058e-133]
+sig diff: team avg=0.35, pitcher pos=2 vs. pitcher pos=9 [p=4.022886588831997e-173]
+sig diff: team avg=0.35, pitcher pos=3 vs. pitcher pos=6 [p=6.614034101392958e-14]
+sig diff: team avg=0.35, pitcher pos=3 vs. pitcher pos=7 [p=1.7637445840810704e-55]
+sig diff: team avg=0.35, pitcher pos=3 vs. pitcher pos=8 [p=7.739828991638169e-87]
+sig diff: team avg=0.35, pitcher pos=3 vs. pitcher pos=9 [p=2.1719000592863943e-119]
+sig diff: team avg=0.35, pitcher pos=4 vs. pitcher pos=6 [p=1.2942527134733691e-20]
+sig diff: team avg=0.35, pitcher pos=4 vs. pitcher pos=7 [p=1.2835707549227605e-68]
+sig diff: team avg=0.35, pitcher pos=4 vs. pitcher pos=8 [p=3.6300281863188245e-103]
+sig diff: team avg=0.35, pitcher pos=4 vs. pitcher pos=9 [p=1.8965909045113902e-138]
+sig diff: team avg=0.35, pitcher pos=5 vs. pitcher pos=6 [p=2.730228869895967e-20]
+sig diff: team avg=0.35, pitcher pos=5 vs. pitcher pos=7 [p=5.1291556746202074e-68]
+sig diff: team avg=0.35, pitcher pos=5 vs. pitcher pos=8 [p=2.0013757721704826e-102]
+sig diff: team avg=0.35, pitcher pos=5 vs. pitcher pos=9 [p=1.3596282572447242e-137]
+sig diff: team avg=0.35, pitcher pos=6 vs. pitcher pos=7 [p=2.1711619378971672e-16]
+sig diff: team avg=0.35, pitcher pos=6 vs. pitcher pos=8 [p=1.0883133428675732e-34]
+sig diff: team avg=0.35, pitcher pos=6 vs. pitcher pos=9 [p=4.59793707847946e-56]
+sig diff: team avg=0.35, pitcher pos=7 vs. pitcher pos=9 [p=3.626139910490934e-14]
+In [ ]:
+
+In [8]:
+hitter_spot_scores = {}
+num_simulated_games = 1000000
+for hitter_ba in tqdm([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    for hitter_spot in range(9):
+        batters = [0.25] * 9
+        batters[hitter_spot] = hitter_ba
+        aprun = ParallelExecutor(n_jobs=-1, use_bar=False)
+        hitter_spot_scores[(hitter_ba, hitter_spot)] = [runs_scored for runs_scored, _ in aprun(total=num_simulated_games)(delayed(simulate_game)(batters) for _ in range(num_simulated_games))]
+HBox(children=(IntProgress(value=0, max=6), HTML(value='')))
+In [66]:
+hitter_batting_avgs = []
+for hitter_ba in reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]):
+    hitter_spot_avgs = []
+    for hitter_spot in range(9):
+        hitter_spot_avgs.append(np.mean(hitter_spot_scores[(hitter_ba, hitter_spot)]))
+    hitter_spot_avgs = np.array(hitter_spot_avgs) / np.mean(hitter_spot_avgs)
+    hitter_batting_avgs.append(hitter_spot_avgs)
+
+plt.figure(figsize=(9, 9))
+sb.heatmap(hitter_batting_avgs, cmap='PuOr', center=1., annot=True, fmt='.3f', cbar=False)
+plt.xticks([x + 0.5 for x in range(9)], [str(x) for x in range(1, 10)], fontsize=12)
+plt.xlabel('Hitter Batting Position (Team BA=0.25)', fontsize=14)
+plt.yticks([y + 0.5 for y in range(6)], reversed([0.1, 0.15, 0.2, 0.25, 0.3, 0.35]), fontsize=12, va='center')
+plt.ylabel('Hitter Batting Average (BA)', fontsize=14)
+plt.title('Exceptional batters should lead the batting line-up,\npoor batters should conclude the line-up\n\n', fontsize=20)
+plt.text(4.5, -0.1, 'Measured: Relative runs scored based on the Hitter batting position & BA\n>1 means more runs scored, <1 means fewer runs scored', fontsize=12, ha='center')
+plt.text(-0.7, 6.8, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+plt.savefig('mlb-batting-order-varying-hitter.png', bbox_inches='tight')
+;
+Out[66]:
+''
+
+In [12]:
+from scipy.stats import ranksums
+from itertools import product
+
+for hitter_avg1, hitter_spot1, hitter_avg2, hitter_spot2 in product([0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9), [0.1, 0.15, 0.2, 0.25, 0.3, 0.35], range(9)):
+    if hitter_avg1 != hitter_avg2:
+        continue
+    if hitter_spot1 > hitter_spot2:
+        continue
+    if hitter_avg1 == hitter_avg2 and hitter_spot1 == hitter_spot2:
+        continue
+    statistic, pval = ranksums(hitter_spot_scores[(hitter_avg1, hitter_spot1)], hitter_spot_scores[(hitter_avg2, hitter_spot2)])
+    if pval < 1e-5:
+        print('sig diff: batter avg={}, batter pos={} vs. batter pos={} [p={}]'.format(hitter_avg1, hitter_spot1 + 1, hitter_spot2 + 1, pval))
+sig diff: batter avg=0.1, batter pos=1 vs. batter pos=6 [p=2.3356714160801088e-24]
+sig diff: batter avg=0.1, batter pos=1 vs. batter pos=7 [p=1.9333496033653533e-42]
+sig diff: batter avg=0.1, batter pos=1 vs. batter pos=8 [p=6.10815448231743e-53]
+sig diff: batter avg=0.1, batter pos=1 vs. batter pos=9 [p=1.575713429661131e-97]
+sig diff: batter avg=0.1, batter pos=2 vs. batter pos=6 [p=2.0215081818800176e-15]
+sig diff: batter avg=0.1, batter pos=2 vs. batter pos=7 [p=4.017891266089287e-30]
+sig diff: batter avg=0.1, batter pos=2 vs. batter pos=8 [p=5.341388537747882e-39]
+sig diff: batter avg=0.1, batter pos=2 vs. batter pos=9 [p=5.060705124564318e-78]
+sig diff: batter avg=0.1, batter pos=3 vs. batter pos=6 [p=1.9653904111195653e-11]
+sig diff: batter avg=0.1, batter pos=3 vs. batter pos=7 [p=2.7407260526466543e-24]
+sig diff: batter avg=0.1, batter pos=3 vs. batter pos=8 [p=2.816306052006508e-32]
+sig diff: batter avg=0.1, batter pos=3 vs. batter pos=9 [p=3.0275119028564315e-68]
+sig diff: batter avg=0.1, batter pos=4 vs. batter pos=6 [p=5.661422005059482e-20]
+sig diff: batter avg=0.1, batter pos=4 vs. batter pos=7 [p=1.6915555936193104e-36]
+sig diff: batter avg=0.1, batter pos=4 vs. batter pos=8 [p=2.9356014190839377e-46]
+sig diff: batter avg=0.1, batter pos=4 vs. batter pos=9 [p=2.9250009360182003e-88]
+sig diff: batter avg=0.1, batter pos=5 vs. batter pos=6 [p=1.4549070522486695e-13]
+sig diff: batter avg=0.1, batter pos=5 vs. batter pos=7 [p=1.828373272957227e-27]
+sig diff: batter avg=0.1, batter pos=5 vs. batter pos=8 [p=5.822777629859619e-36]
+sig diff: batter avg=0.1, batter pos=5 vs. batter pos=9 [p=1.0934504454814966e-73]
+sig diff: batter avg=0.1, batter pos=6 vs. batter pos=8 [p=2.9773549237136997e-07]
+sig diff: batter avg=0.1, batter pos=6 vs. batter pos=9 [p=4.8361947840322014e-27]
+sig diff: batter avg=0.1, batter pos=7 vs. batter pos=9 [p=2.7297346879156197e-13]
+sig diff: batter avg=0.1, batter pos=8 vs. batter pos=9 [p=1.5922744179739228e-08]
+sig diff: batter avg=0.15, batter pos=1 vs. batter pos=6 [p=4.366179130152077e-06]
+sig diff: batter avg=0.15, batter pos=1 vs. batter pos=7 [p=1.934107684620965e-12]
+sig diff: batter avg=0.15, batter pos=1 vs. batter pos=8 [p=7.78624198027531e-20]
+sig diff: batter avg=0.15, batter pos=1 vs. batter pos=9 [p=1.3890943563058296e-38]
+sig diff: batter avg=0.15, batter pos=2 vs. batter pos=6 [p=4.209619788129184e-08]
+sig diff: batter avg=0.15, batter pos=2 vs. batter pos=7 [p=2.28957523663897e-15]
+sig diff: batter avg=0.15, batter pos=2 vs. batter pos=8 [p=1.5958028806387556e-23]
+sig diff: batter avg=0.15, batter pos=2 vs. batter pos=9 [p=1.0540870392388548e-43]
+sig diff: batter avg=0.15, batter pos=3 vs. batter pos=7 [p=5.888897525539422e-07]
+sig diff: batter avg=0.15, batter pos=3 vs. batter pos=8 [p=1.5522832890635303e-12]
+sig diff: batter avg=0.15, batter pos=3 vs. batter pos=9 [p=7.454010617532868e-28]
+sig diff: batter avg=0.15, batter pos=4 vs. batter pos=6 [p=1.5887629310380087e-08]
+sig diff: batter avg=0.15, batter pos=4 vs. batter pos=7 [p=5.738765364593026e-16]
+sig diff: batter avg=0.15, batter pos=4 vs. batter pos=8 [p=2.814964152068496e-24]
+sig diff: batter avg=0.15, batter pos=4 vs. batter pos=9 [p=9.416275387342214e-45]
+sig diff: batter avg=0.15, batter pos=5 vs. batter pos=7 [p=5.789746845829661e-07]
+sig diff: batter avg=0.15, batter pos=5 vs. batter pos=8 [p=1.5306117655840685e-12]
+sig diff: batter avg=0.15, batter pos=5 vs. batter pos=9 [p=7.237481516249173e-28]
+sig diff: batter avg=0.15, batter pos=6 vs. batter pos=8 [p=5.940356459903494e-06]
+sig diff: batter avg=0.15, batter pos=6 vs. batter pos=9 [p=4.351690466180415e-17]
+sig diff: batter avg=0.15, batter pos=7 vs. batter pos=9 [p=2.610584051321233e-09]
+sig diff: batter avg=0.2, batter pos=1 vs. batter pos=9 [p=3.76689328874521e-08]
+sig diff: batter avg=0.2, batter pos=2 vs. batter pos=8 [p=5.205859940162342e-06]
+sig diff: batter avg=0.2, batter pos=2 vs. batter pos=9 [p=1.2174761546450417e-10]
+sig diff: batter avg=0.2, batter pos=3 vs. batter pos=9 [p=7.448777734010058e-07]
+sig diff: batter avg=0.2, batter pos=4 vs. batter pos=9 [p=4.803472139153211e-08]
+sig diff: batter avg=0.2, batter pos=5 vs. batter pos=7 [p=2.4459594614199587e-06]
+sig diff: batter avg=0.2, batter pos=5 vs. batter pos=8 [p=7.626491206096117e-07]
+sig diff: batter avg=0.2, batter pos=5 vs. batter pos=9 [p=8.845036615126957e-12]
+sig diff: batter avg=0.3, batter pos=1 vs. batter pos=7 [p=4.087726662547383e-09]
+sig diff: batter avg=0.3, batter pos=1 vs. batter pos=8 [p=1.3205738706976753e-09]
+sig diff: batter avg=0.3, batter pos=1 vs. batter pos=9 [p=1.0290332194299952e-15]
+sig diff: batter avg=0.3, batter pos=2 vs. batter pos=7 [p=9.480606656615423e-07]
+sig diff: batter avg=0.3, batter pos=2 vs. batter pos=8 [p=3.633806148920251e-07]
+sig diff: batter avg=0.3, batter pos=2 vs. batter pos=9 [p=1.8419919798882447e-12]
+sig diff: batter avg=0.3, batter pos=3 vs. batter pos=9 [p=2.3167418309385654e-10]
+sig diff: batter avg=0.3, batter pos=4 vs. batter pos=7 [p=7.55298575627675e-06]
+sig diff: batter avg=0.3, batter pos=4 vs. batter pos=8 [p=3.1216536518845004e-06]
+sig diff: batter avg=0.3, batter pos=4 vs. batter pos=9 [p=3.5434170853752895e-11]
+sig diff: batter avg=0.3, batter pos=5 vs. batter pos=8 [p=5.911151637054599e-06]
+sig diff: batter avg=0.3, batter pos=5 vs. batter pos=9 [p=8.765394985228765e-11]
+sig diff: batter avg=0.35, batter pos=1 vs. batter pos=6 [p=1.7269273863841656e-12]
+sig diff: batter avg=0.35, batter pos=1 vs. batter pos=7 [p=1.0342126228400915e-19]
+sig diff: batter avg=0.35, batter pos=1 vs. batter pos=8 [p=2.8883476180027313e-26]
+sig diff: batter avg=0.35, batter pos=1 vs. batter pos=9 [p=1.0533809552536307e-44]
+sig diff: batter avg=0.35, batter pos=2 vs. batter pos=7 [p=6.177648266053254e-08]
+sig diff: batter avg=0.35, batter pos=2 vs. batter pos=8 [p=3.9592132643227364e-12]
+sig diff: batter avg=0.35, batter pos=2 vs. batter pos=9 [p=3.60635063988907e-25]
+sig diff: batter avg=0.35, batter pos=3 vs. batter pos=7 [p=2.092547777615177e-06]
+sig diff: batter avg=0.35, batter pos=3 vs. batter pos=8 [p=3.601328161213642e-10]
+sig diff: batter avg=0.35, batter pos=3 vs. batter pos=9 [p=3.1411817736944074e-22]
+sig diff: batter avg=0.35, batter pos=4 vs. batter pos=6 [p=3.8732703941556835e-10]
+sig diff: batter avg=0.35, batter pos=4 vs. batter pos=7 [p=1.1262407382894222e-16]
+sig diff: batter avg=0.35, batter pos=4 vs. batter pos=8 [p=1.0286309709980345e-22]
+sig diff: batter avg=0.35, batter pos=4 vs. batter pos=9 [p=5.3593257566914e-40]
+sig diff: batter avg=0.35, batter pos=5 vs. batter pos=7 [p=4.938191614284398e-10]
+sig diff: batter avg=0.35, batter pos=5 vs. batter pos=8 [p=9.606821714815804e-15]
+sig diff: batter avg=0.35, batter pos=5 vs. batter pos=9 [p=5.513759189984902e-29]
+sig diff: batter avg=0.35, batter pos=6 vs. batter pos=9 [p=2.7471407448075344e-12]
+sig diff: batter avg=0.35, batter pos=7 vs. batter pos=9 [p=7.161732780696792e-07]
+In [ ]:
+
+In [218]:
+batters = [0.25] * 9
+num_simulated_games = 1000000
+aprun = ParallelExecutor(n_jobs=-1, use_bar=False)
+average_team_stats = [game_stats for _, game_stats in aprun(total=num_simulated_games)(delayed(simulate_game)(batters) for _ in range(num_simulated_games))]
+In [219]:
+batting_stat = 'At Bat'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+
+with plt.style.context('tableau10'):
+    plt.figure()
+    plt.bar(range(len(hitter_spot_avgs)), hitter_spot_avgs, color='#9467BD')
+    batting_stat += 's per Game'
+    plt.ylabel(batting_stat)
+    plt.xticks(range(9), [str(x) for x in range(1, 10)])
+    plt.xlabel('Batting Position')
+    plt.title('Earlier batters have more At Bats on average')
+    plt.text(-1.3, -0.75, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+    plt.savefig('mlb-batting-order-stats-{}.png'.format(batting_stat.replace(' ', '-')), bbox_inches='tight')
+;
+Out[219]:
+''
+
+In [220]:
+batting_stat = 'At Bat'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+hitter_spot_avgs
+Out[220]:
+[4.419502,
+ 4.31038,
+ 4.212098,
+ 4.118346,
+ 4.0211,
+ 3.913748,
+ 3.79499,
+ 3.667696,
+ 3.53981]
+In [221]:
+batting_stat = 'Players On Base'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+
+with plt.style.context('tableau10'):
+    plt.figure()
+    plt.bar(range(len(hitter_spot_avgs)), hitter_spot_avgs, color='#9467BD')
+    batting_stat += ' per Game'
+    plt.ylabel(batting_stat)
+    plt.xticks(range(9), [str(x) for x in range(1, 10)])
+    plt.xlabel('Batting Position')
+    plt.title('Middle batters tend to have more players on base when batting')
+    plt.text(-1.5, -0.4, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+    plt.savefig('mlb-batting-order-stats-{}.png'.format(batting_stat.replace(' ', '-')), bbox_inches='tight')
+;
+Out[221]:
+''
+
+In [222]:
+batting_stat = 'RBI'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+
+with plt.style.context('tableau10'):
+    plt.figure()
+    plt.bar(range(len(hitter_spot_avgs)), hitter_spot_avgs, color='#9467BD')
+    batting_stat += ' per Game'
+    plt.ylabel(batting_stat)
+    plt.xticks(range(9), [str(x) for x in range(1, 10)])
+    plt.xlabel('Batting Position')
+    plt.title('Middle batters tend to contribute more RBI')
+    plt.text(-1.6, -0.06, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+    plt.savefig('mlb-batting-order-stats-{}.png'.format(batting_stat.replace(' ', '-')), bbox_inches='tight')
+;
+Out[222]:
+''
+
+In [225]:
+batting_stat = 'RBI'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+hitter_spot_avgs
+Out[225]:
+[0.300596,
+ 0.305068,
+ 0.311784,
+ 0.321964,
+ 0.317941,
+ 0.299361,
+ 0.292952,
+ 0.287004,
+ 0.27537]
+In [223]:
+batting_stat = 'Bases Loaded'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+
+with plt.style.context('tableau10'):
+    plt.figure()
+    plt.bar(range(len(hitter_spot_avgs)), hitter_spot_avgs, color='#9467BD')
+    batting_stat += ' per Game'
+    plt.ylabel(batting_stat)
+    plt.xticks(range(9), [str(x) for x in range(1, 10)])
+    plt.xlabel('Batting Position')
+    plt.title('The 6th batter is most likely to face a Bases Loaded situation')
+    plt.text(-1.6, -0.013, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+    plt.savefig('mlb-batting-order-stats-{}.png'.format(batting_stat.replace(' ', '-')), bbox_inches='tight')
+;
+Out[223]:
+''
+
+In [224]:
+batting_stat = 'Grand Slam'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+
+with plt.style.context('tableau10'):
+    plt.figure()
+    plt.bar(range(len(hitter_spot_avgs)), hitter_spot_avgs, color='#9467BD')
+    batting_stat += 's per Game'
+    plt.ylabel(batting_stat)
+    plt.xticks(range(9), [str(x) for x in range(1, 10)])
+    plt.xlabel('Batting Position')
+    plt.title('The 6th batter is most likely to hit a Grand Slam')
+    plt.text(-1.85, -0.0005, 'Data source: League averages & custom baseball simulations\nAuthor: Randal S. Olson (randalolson.com / @randal_olson)', fontsize=10, ha='left')
+    plt.savefig('mlb-batting-order-stats-{}.png'.format(batting_stat.replace(' ', '-')), bbox_inches='tight')
+;
+Out[224]:
+''
+
+In [226]:
+batting_stat = 'Grand Slam'
+hitter_spot_avgs = []
+for hitter_spot in range(9):
+    hitter_spot_avgs.append(np.mean([game_stats[hitter_spot][batting_stat] for game_stats in average_team_stats]))
+hitter_spot_avgs
+Out[226]:
+[0.001948,
+ 0.001837,
+ 0.001915,
+ 0.001929,
+ 0.002284,
+ 0.002683,
+ 0.002059,
+ 0.001988,
+ 0.002107]
